@@ -9,7 +9,7 @@
 # Public License for more details.  You should have received a copy of the
 # GNU General Public License along with this program; if not, write to the
 # Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
-# 02110-1301, USA. 
+# 02110-1301, USA.
 """
 Update containers like you update packages.
 """
@@ -78,11 +78,10 @@ class ContainerCommand(dnf.cli.Command):
                 logger.debug("Checking: {} {} {} {}".format(
                     container.name, container.original_structure.get('Type'),
                     container.created, container.image_name))
-                # Get the latest tag for the image
                 inspection = util.skopeo_inspect(
-                    'docker://' + self._latest_image(container.image_name))
+                    'docker://' + container.image_name)
                 digest = inspection.get('Digest', ':').split(':')[1]
-                # Match the local image digest with the latest digest
+                # Match the local image digest with the remote digest
                 if digest != container.image:
                     needs_update.append((container, digest))
                 logger.debug(
@@ -117,8 +116,57 @@ class ContainerCommand(dnf.cli.Command):
                 not self.base.conf.assumeno and self.base.output.userconfirm(
                     msg='Update? [y/N]: ', defaultyes_msg='Update? [Y/n]: ')):
                     for container, digest in needs_update:
-                        self._pull_latest(container)
+                        self._pull_existing_tag(container)
                         self._update_container(container)
+
+    def _update_container(self, container):
+        """
+        Update a container to the latest image.
+        """
+        logger.info('Updating %s ...', container.name)
+        sc = syscontainers.SystemContainers()
+        sc.args = Namespace(remote=True)
+        try:
+            if sc.get_checkout(container.name):
+                return sc.update_container(
+                    container.name, [], container.image_name)
+            else:
+                raise dnf.exceptions.Error(
+                    'Could not find checkout for {}'.format(container.name))
+        except ValueError as err:
+            raise dnf.exceptions.Error(err)
+
+    def _pull_existing_tag(self, container):
+        """
+        Update the container to the latest version for the tag.
+        """
+        try:
+            be, img_obj = self.be_utils.get_backend_and_image_obj(
+                container.image_name,
+                str_preferred_backend=container.backend.backend,
+                required=True)
+            input_name = img_obj.input_name
+        except ValueError:
+            raise dnf.exceptions.Error(
+                "{} not found locally.  Unable to update".format(
+                    container.name))
+
+        force = True
+        # ostree doesn't allow force
+        if container.backend.backend == 'ostree':
+            force = False
+
+        logger.info('Pulling %s ...', input_name)
+        be.update(
+            input_name, debug=self.debug, force=force, image_object=img_obj)
+
+    # Currently not used
+    '''
+    def _latest_image(self, image):
+        """
+        Returns an image using the latest tag.
+        """
+        return image.rsplit(':', 1)[0] + ":latest"
 
     def _pull_latest(self, container):
         """
@@ -152,27 +200,4 @@ class ContainerCommand(dnf.cli.Command):
                 assumeyes=self.base.conf.assumeyes)
         except ValueError as e:
             raise ValueError("Failed: {}".format(e))
-
-    def _update_container(self, container):
-        """
-        Update a container to the latest image.
-        """
-        logger.info('Updating %s ...', container.name)
-        sc = syscontainers.SystemContainers()
-        sc.args = Namespace(remote=True)
-        try:
-            if sc.get_checkout(container.name):
-                return sc.update_container(
-                    container.name, [], self._latest_image(
-                        container.image_name))
-            else:
-                raise dnf.exceptions.Error(
-                    'Could not find checkout for {}'.format(container.name))
-        except ValueError as err:
-            raise dnf.exceptions.Error(err)
-
-    def _latest_image(self, image):
-        """
-        Returns an image using the latest tag.
-        """
-        return image.rsplit(':', 1)[0] + ":latest"
+    '''
